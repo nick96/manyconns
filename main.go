@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -53,12 +54,11 @@ func main() {
 		}
 	}
 
-	sometimes := rate.Sometimes{
-		Interval: time.Duration((1.0/float32(connCreationRate))*1000000) * time.Microsecond,
-	}
+	interval := time.Duration((1.0/float32(connCreationRate))*1000000) * time.Microsecond
+	limiter := rate.NewLimiter(rate.Every(interval), 1)
 
-	log.Printf("Creating %d connections at a rate of %d per second (interval %v)",
-		maxConns, connCreationRate, sometimes.Interval,
+	log.Printf("Creating %d connections at a rate of %d per second",
+		maxConns, connCreationRate,
 	)
 
 	timeSpentCreatingConns := new(int)
@@ -77,10 +77,13 @@ func main() {
 		}
 	}()
 
-	var conns []*sql.Conn
-	for {
-		if len(conns) < maxConns {
-			sometimes.Do(func() {
+	conns := make(chan *sql.Conn, maxConns)
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		done := false
+		for {
+			if limiter.Allow() {
 				start := time.Now()
 				c, err := db.Conn(context.Background())
 				if err != nil {
@@ -89,8 +92,18 @@ func main() {
 				}
 				*timeSpentCreatingConns += int(time.Since(start).Milliseconds())
 
-				conns = append(conns, c)
-			})
+				select {
+				case conns <- c:
+				default:
+					log.Printf("Reached max number of connections, stopping...")
+					done = true
+				}
+			}
+
+			if done {
+				break
+			}
 		}
+		wg.Done()
 	}
 }
