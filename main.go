@@ -106,4 +106,8 @@ func main() {
 		}
 		wg.Done()
 	}
+
+	for range time.Tick(10 * time.Second) {
+		log.Printf("Holding onto the conns")
+	}
 }
